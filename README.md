@@ -31,11 +31,6 @@ var upgradeFS embed.FS
 //go:embed downgrade
 var downgradeFS embed.FS
 
-func init() {
-    harmonydb.DefaultSchema = "BobsFishery"
-    harmonydb.Init(upgadeFS, downgradeFS)
-}
-
 func main() {
     db, err := harmonydb.NewFromConfig(harmonydb.Config{
         Hosts:       []string{"localhost"},
@@ -44,6 +39,10 @@ func main() {
         Database:    "yugabyte",
         Port:        "5433",
         LoadBalance: false,
+        Schema:      "BobsFishery",
+        UpgradeFS:   &upgradeFS,
+        DowngradeF:  &downgradeFS,
+        SSLMode:     "require",
     })
     if err != nil {
         panic(err)
