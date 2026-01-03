@@ -188,15 +188,14 @@ func NewFromConfig(options Config) (*DB, error) {
 		strings.Join(connArgs, "&"),
 	)
 
-	Schema := DefaultSchema
 	if itest != "" {
-		Schema = "itest_" + itest
+		options.Schema = "itest_" + itest
 	}
 
-	if err := ensureSchemaExists(connString, Schema); err != nil {
+	if err := ensureSchemaExists(connString, options.Schema); err != nil {
 		return nil, err
 	}
-	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + Schema)
+	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + options.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +223,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		DBMeasures.Errors.M(1)
 	}
 
-	db := DB{cfg: cfg, schema: Schema, hostnames: hosts, sqlEmbedFS: *options.SqlEmbedFS, downgradeEmbedFS: *options.DowngradeEmbedFS} // pgx populated in AddStatsAndConnect
+	db := DB{cfg: cfg, schema: options.Schema, hostnames: hosts, sqlEmbedFS: *options.SqlEmbedFS, downgradeEmbedFS: *options.DowngradeEmbedFS} // pgx populated in AddStatsAndConnect
 	if err := db.addStatsAndConnect(); err != nil {
 		return nil, err
 	}
