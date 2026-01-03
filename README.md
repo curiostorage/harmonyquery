@@ -32,6 +32,7 @@ var upgradeFS embed.FS
 var downgradeFS embed.FS
 
 func init() {
+    harmonydb.DefaultSchema = "BobsFishery"
     harmonydb.Init(upgadeFS, downgradeFS)
 }
 

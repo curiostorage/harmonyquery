@@ -111,6 +111,8 @@ func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
 	return db, nil
 }
 
+var DefaultSchema = "curio"
+
 // New is to be called once per binary to establish the pool.
 // log() is for errors. It returns an upgraded database's connection.
 // This entry point serves both production and integration tests, so it's more DI.
@@ -167,15 +169,15 @@ func New(hosts []string, username, password, database, port string, loadBalance 
 		strings.Join(connArgs, "&"),
 	)
 
-	schema := "curio"
+	Schema := DefaultSchema
 	if itest != "" {
-		schema = "itest_" + itest
+		Schema = "itest_" + itest
 	}
 
-	if err := ensureSchemaExists(connString, schema); err != nil {
+	if err := ensureSchemaExists(connString, Schema); err != nil {
 		return nil, err
 	}
-	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + schema)
+	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +205,7 @@ func New(hosts []string, username, password, database, port string, loadBalance 
 		DBMeasures.Errors.M(1)
 	}
 
-	db := DB{cfg: cfg, schema: schema, hostnames: hosts} // pgx populated in AddStatsAndConnect
+	db := DB{cfg: cfg, schema: Schema, hostnames: hosts} // pgx populated in AddStatsAndConnect
 	if err := db.addStatsAndConnect(); err != nil {
 		return nil, err
 	}
