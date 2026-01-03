@@ -60,6 +60,9 @@ type Config struct {
 
 	// Load Balance the connection over multiple nodes
 	LoadBalance bool
+
+	// Use SSL for the connection
+	UseSSL bool
 }
 
 // NewFromConfig is a convenience function.
@@ -74,6 +77,7 @@ func NewFromConfig(cfg Config) (*DB, error) {
 		cfg.Database,
 		cfg.Port,
 		cfg.LoadBalance,
+		cfg.UseSSL,
 		"",
 	)
 }
@@ -95,6 +99,7 @@ func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
 		"yugabyte",
 		"5433",
 		false,
+		false,
 		id,
 	)
 	if err != nil {
@@ -109,7 +114,7 @@ func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
 // New is to be called once per binary to establish the pool.
 // log() is for errors. It returns an upgraded database's connection.
 // This entry point serves both production and integration tests, so it's more DI.
-func New(hosts []string, username, password, database, port string, loadBalance bool, itestID ITestID) (*DB, error) {
+func New(hosts []string, username, password, database, port string, loadBalance bool, useSSL bool, itestID ITestID) (*DB, error) {
 	itest := string(itestID)
 
 	if len(hosts) == 0 {
@@ -135,23 +140,30 @@ func New(hosts []string, username, password, database, port string, loadBalance 
 		connectionHost = fmt.Sprintf("%s:%s", hosts[0], port)
 	}
 
-	// Construct the connection string
-	connString := fmt.Sprintf(
-		"postgresql://%s:%s@%s/%s?sslmode=disable",
-		username,
-		password,
-		connectionHost,
-		database,
-	)
+	connArgs := []string{}
+
+	if !useSSL {
+		connArgs = append(connArgs, "sslmode=disable")
+	}
 
 	if loadBalance {
-		connString += "&load_balance=true"
+		connArgs = append(connArgs, "load_balance=true")
 	} else {
 		// When load balancing is disabled, explicitly disable it
 		// fallback_to_topology_keys_only=true ensures client only uses specified nodes
 		// Note: Don't set topology_keys= (empty) as Yugabyte rejects empty topology_keys format
-		connString += "&load_balance=false&fallback_to_topology_keys_only=true"
+		connArgs = append(connArgs, "load_balance=false", "fallback_to_topology_keys_only=true")
 	}
+
+	// Construct the connection string
+	connString := fmt.Sprintf(
+		"postgresql://%s:%s@%s/%s?%s",
+		username,
+		password,
+		connectionHost,
+		database,
+		strings.Join(connArgs, "&"),
+	)
 
 	schema := "curio"
 	if itest != "" {
