@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"maps"
 	"math/rand"
 	"net"
 	"os"
@@ -350,11 +351,6 @@ func ensureSchemaExists(connString, schema string) error {
 	return err
 }
 
-func Init(sql embed.FS, downgrade embed.FS) {
-	upgadeFS = sql
-	downgradeFS = downgrade
-}
-
 var upgadeFS embed.FS
 
 var downgradeFS embed.FS
@@ -380,9 +376,11 @@ func (db *DB) DowngradeTo(ctx context.Context, dateNum int) error {
 	if err != nil {
 		return xerrors.Errorf("cannot read downgrade directory: %w", err)
 	}
+
 	for _, downgrade := range downgrades {
 		m[downgrade.Name()[:8]] = "downgrade/" + downgrade.Name()
 	}
+	fmt.Println("All available downgrades:", maps.Values(m))
 
 	allGood := true
 	for _, file := range toDowngrade {
