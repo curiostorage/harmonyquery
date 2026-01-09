@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -380,7 +381,7 @@ func (db *DB) DowngradeTo(ctx context.Context, dateNum int) error {
 	for _, downgrade := range downgrades {
 		m[downgrade.Name()[:8]] = "downgrade/" + downgrade.Name()
 	}
-	fmt.Println("All available downgrades:", maps.Values(m))
+	fmt.Println("All available downgrades:", strings.Join(slices.Collect(maps.Values(m)), ", "))
 
 	allGood := true
 	for _, file := range toDowngrade {
