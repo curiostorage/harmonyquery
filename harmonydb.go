@@ -128,12 +128,7 @@ func NewFromConfig(options Config) (*DB, error) {
 	if options.Schema == "" {
 		options.Schema = DefaultSchema
 	}
-	if options.SqlEmbedFS == nil {
-		options.SqlEmbedFS = &upgadeFS
-	}
-	if options.DowngradeEmbedFS == nil {
-		options.DowngradeEmbedFS = &downgradeFS
-	}
+
 	if options.SSLMode == "" {
 		options.SSLMode = "disable"
 	}
@@ -352,10 +347,6 @@ func ensureSchemaExists(connString, schema string) error {
 	return err
 }
 
-var upgadeFS embed.FS
-
-var downgradeFS embed.FS
-
 var ITestUpgradeFunc func(*pgxpool.Pool, string, string)
 
 // DowngradeTo downgrades the database schema to a previous date (when an upgrade was applied).
@@ -398,7 +389,7 @@ func (db *DB) DowngradeTo(ctx context.Context, dateNum int) error {
 			logger.Errorf("Original file needing downgrade: %s", file[:8], f)
 			continue
 		}
-		if _, err := downgradeFS.ReadFile(downgradeFile); err != nil {
+		if _, err := db.downgradeEmbedFS.ReadFile(downgradeFile); err != nil {
 			allGood = false
 			logger.Errorf("cannot find/read downgrade file for %s. Err: %w", file, err)
 		}
