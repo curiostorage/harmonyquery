@@ -88,6 +88,7 @@ func envElse(env, els string) string {
 var DefaultHostEnv = "HARMONYDB_HOSTS"
 
 func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
+	logger.Infof("HARMONYDB_HOSTS: %s", os.Getenv(DefaultHostEnv))
 	db, err := New(
 		[]string{envElse(DefaultHostEnv, "127.0.0.1")},
 		"yugabyte",
@@ -313,13 +314,13 @@ func (db *DB) addStatsAndConnect() error {
 // This must be called at the end of each integration test.
 func (db *DB) ITestDeleteAll() {
 	if !strings.HasPrefix(db.schema, "itest_") {
-		fmt.Println("Warning: this should never be called on anything but an itest schema.")
+		logger.Warn("Warning: this should never be called on anything but an itest schema.")
 		return
 	}
 	defer db.pgx.Close()
 	_, err := db.pgx.Exec(context.Background(), "DROP SCHEMA "+db.schema+" CASCADE")
 	if err != nil {
-		fmt.Println("warning: unclean itest shutdown: cannot delete schema: " + err.Error())
+		logger.Warn("warning: unclean itest shutdown: cannot delete schema: " + err.Error())
 		return
 	}
 }
@@ -372,7 +373,7 @@ func (db *DB) DowngradeTo(ctx context.Context, dateNum int) error {
 	for _, downgrade := range downgrades {
 		m[downgrade.Name()[:8]] = "downgrade/" + downgrade.Name()
 	}
-	fmt.Println("All available downgrades:", strings.Join(slices.Collect(maps.Values(m)), ", "))
+	logger.Infof("All available downgrades:", strings.Join(slices.Collect(maps.Values(m)), ", "))
 
 	allGood := true
 	for _, file := range toDowngrade {
