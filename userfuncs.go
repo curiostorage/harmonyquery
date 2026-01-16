@@ -260,8 +260,13 @@ func (db *DB) transactionInner(ctx context.Context, f func(*Tx) (commit bool, er
 
 // Exec in a transaction.
 func (t *Tx) Exec(sql rawStringOnly, arguments ...any) (count int, err error) {
-	res, err := t.Tx.Exec(t.ctx, string(sql), arguments...)
-	return int(res.RowsAffected()), err
+	res, err := backoffForSerializationError(func() (pgconn.CommandTag, error) {
+		return t.Tx.Exec(t.ctx, string(sql), arguments...)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int(res.RowsAffected()), nil
 }
 
 // Query in a transaction.
