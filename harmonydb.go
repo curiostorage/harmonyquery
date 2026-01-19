@@ -85,6 +85,7 @@ type PoolConfig struct {
 	MinConnections        int
 	MaxConnectionLifetime time.Duration
 	MaxConnectionIdleTime time.Duration
+	MaxIdleTime           time.Duration
 }
 
 func envElse(env, els string) string {
@@ -210,7 +211,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		cfg.MaxConns = int32(options.PoolConfig.MaxConnections)
 		cfg.MinConns = int32(options.PoolConfig.MinConnections)
 		cfg.MaxConnLifetime = options.PoolConfig.MaxConnectionLifetime
-		cfg.MaxConnIdleTime = options.PoolConfig.MaxConnectionIdleTime
+		cfg.MaxConnIdleTime = options.PoolConfig.MaxIdleTime
 	}
 
 	// When load balancing is disabled, restrict the pool to only use the specified host
