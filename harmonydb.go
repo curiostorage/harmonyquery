@@ -76,6 +76,8 @@ type Config struct {
 	DowngradeEmbedFS *embed.FS
 
 	ITestID ITestID
+
+	ConnectionConfig *pgx.ConnConfig // Set all or nothing.
 }
 
 func envElse(env, els string) string {
@@ -196,6 +198,9 @@ func NewFromConfig(options Config) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + options.Schema)
 	if err != nil {
 		return nil, err
+	}
+	if options.ConnectionConfig != nil {
+		cfg.ConnConfig = options.ConnectionConfig
 	}
 
 	// When load balancing is disabled, restrict the pool to only use the specified host
