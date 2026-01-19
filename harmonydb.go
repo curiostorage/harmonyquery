@@ -84,7 +84,6 @@ type PoolConfig struct {
 	MaxConnections        int
 	MinConnections        int
 	MaxConnectionLifetime time.Duration
-	MaxConnectionIdleTime time.Duration
 	MaxIdleTime           time.Duration
 }
 
