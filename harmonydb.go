@@ -77,7 +77,14 @@ type Config struct {
 
 	ITestID ITestID
 
-	ConnectionConfig *pgx.ConnConfig // Set all or nothing.
+	*PoolConfig // Set all or nothing. We use every value.
+}
+
+type PoolConfig struct {
+	MaxConnections        int
+	MinConnections        int
+	MaxConnectionLifetime time.Duration
+	MaxConnectionIdleTime time.Duration
 }
 
 func envElse(env, els string) string {
@@ -199,8 +206,11 @@ func NewFromConfig(options Config) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if options.ConnectionConfig != nil {
-		cfg.ConnConfig = options.ConnectionConfig
+	if options.PoolConfig != nil {
+		cfg.MaxConns = int32(options.PoolConfig.MaxConnections)
+		cfg.MinConns = int32(options.PoolConfig.MinConnections)
+		cfg.MaxConnLifetime = options.PoolConfig.MaxConnectionLifetime
+		cfg.MaxConnIdleTime = options.PoolConfig.MaxConnectionIdleTime
 	}
 
 	// When load balancing is disabled, restrict the pool to only use the specified host
