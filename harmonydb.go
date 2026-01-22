@@ -9,12 +9,12 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +38,7 @@ type DB struct {
 	schema           string
 	hostnames        []string
 	BTFPOnce         sync.Once
-	BTFP             atomic.Uintptr // BeginTransactionFramePointer
+	BTFP             uintptr // A PC only in your stack when you call BeginTransaction()
 	sqlEmbedFS       embed.FS
 	downgradeEmbedFS embed.FS
 }
@@ -241,7 +241,22 @@ func NewFromConfig(options Config) (*DB, error) {
 		return nil, err
 	}
 
-	return &db, db.upgrade()
+	if err = db.upgrade(); err != nil {
+		return nil, err
+	}
+
+	db.setBTFP()
+	return &db, nil
+}
+
+// called by New(). Not thread-safe. Exposed for testing.
+func (db *DB) setBTFP() {
+	db.BeginTransaction(context.Background(), func(tx *Tx) (bool, error) {
+		fp := make([]uintptr, 20)
+		runtime.Callers(2, fp)
+		db.BTFP = fp[0]
+		return false, nil
+	})
 }
 
 type tracer struct {
