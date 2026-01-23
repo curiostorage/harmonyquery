@@ -1,13 +1,19 @@
 # HarmonyDB
 
-A Postgres adapter in harmony with developers.
+A Postgres/Yugabyte adapter in harmony with busy developers. The top few dev mistakes with DB
 
 ## Features
 
 - Rolling to secondary database servers on connection failure
 - Convenience features for Go + SQL
 - Prevention of SQL injection vulnerabilities
+- Prevents non-transaction calls in a transaction (really hard to debug)
+- Requires context, so cancel at your lowest layer is guaranteed plumbed.
+- Includes your migrations and test isolation so your dev's db instance can run tests and have a main instance
+- Discourages dangling transactions & dangling result cursors. 
+- Select(, &a.([]resultType)) and QueryRow().Scan(&a) conveniences
 - Monitors behavior via Prometheus stats and logging of errors
+- All code uses the Go1 promise & is not unsafe. Only DB can be shared across threads.
 
 ## Installation
 
