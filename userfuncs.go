@@ -172,9 +172,8 @@ func (db *DB) Select(ctx context.Context, sliceOfStructPtr any, sql rawStringOnl
 }
 
 type Tx struct {
-	tx       func() (pgx.Tx, error)
-	ctx      context.Context
-	didBegin bool
+	tx  func() (pgx.Tx, error)
+	ctx context.Context
 }
 
 // usedInTransaction is a helper to prevent nesting transactions
@@ -246,8 +245,8 @@ func (db *DB) transactionInner(ctx context.Context, f func(*Tx) (commit bool, er
 			if err != nil {
 				return
 			}
-			if tmp := tx.Rollback(ctx); tmp != nil {
-				retErr = tmp
+			if tmpErr := tx.Rollback(ctx); tmpErr != nil && retErr == nil {
+				retErr = tmpErr
 			}
 		}
 	}()
