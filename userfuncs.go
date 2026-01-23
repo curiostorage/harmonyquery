@@ -301,6 +301,15 @@ func (t *Tx) QueryRow(sql rawStringOnly, arguments ...any) Row {
 	return tx.QueryRow(t.ctx, string(sql), arguments...)
 }
 
+// SendBatch in a transaction.
+func (t *Tx) SendBatch(ctx context.Context, b *pgx.Batch) (pgx.BatchResults, error) {
+	tx, err := t.tx()
+	if err != nil {
+		return nil, err
+	}
+	return tx.SendBatch(ctx, b), nil
+}
+
 // Select in a transaction.
 func (t *Tx) Select(sliceOfStructPtr any, sql rawStringOnly, arguments ...any) error {
 	rows, err := t.Query(sql, arguments...)
