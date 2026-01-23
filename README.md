@@ -11,9 +11,12 @@ A Postgres/Yugabyte adapter in harmony with busy developers. The top few dev mis
 - Requires context, so cancel at your lowest layer is guaranteed plumbed.
 - Includes your migrations and test isolation so your dev's db instance can run tests and have a main instance
 - Discourages dangling transactions & dangling result cursors. 
-- Select(, &a.([]resultType)) and QueryRow().Scan(&a) conveniences
+- Conveniences:  QueryRow().Scan(&a) and: var a []resultType; db.Select(&a, "query")
 - Monitors behavior via Prometheus stats and logging of errors
-- All code uses the Go1 promise & is not unsafe. Only DB can be shared across threads.
+- Entirely within the Go1 promise. No unsafe. 
+
+## Notes
+- Only DB can be shared across threads.
 
 ## Installation
 
