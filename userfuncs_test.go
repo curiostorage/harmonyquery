@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/samber/lo"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBTFP_NestedTransaction(t *testing.T) {
@@ -28,9 +29,7 @@ func TestBTFP_NestedTransaction(t *testing.T) {
 			})
 			return false, innerErr
 		})
-		if err != nil {
-			t.Errorf("got %v, want nil", err)
-		}
+		require.ErrorIs(t, err, errTx)
 	}()
 
 	if !reached {
@@ -64,9 +63,8 @@ func TestBTFP_ExecInsideTransaction(t *testing.T) {
 	if !reached {
 		t.Skip("need real DB")
 	}
-	if execErr != errTx {
-		t.Errorf("got %v, want %v", execErr, errTx)
-	}
+	require.ErrorIs(t, execErr, errTx)
+
 }
 
 func TestBTFP_StoredValue(t *testing.T) {
