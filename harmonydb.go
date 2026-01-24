@@ -2,6 +2,7 @@ package harmonydb
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"fmt"
 	"maps"
@@ -152,83 +153,71 @@ func NewFromConfig(options Config) (*DB, error) {
 	// Debug: Log which path we're taking
 	logger.Infof("Yugabyte connection config: loadBalance=%v, hosts=%v, port=%s", loadBalance, hosts, port)
 
-	// When load balancing is disabled, use only the first host to prevent
-	// Yugabyte client from discovering internal Docker IPs via topology discovery
-	var connectionHost string
-	if loadBalance {
-		// Join all hosts with the port for load balancing
-		hostPortPairs := make([]string, len(hosts))
-		for i, host := range hosts {
-			hostPortPairs[i] = fmt.Sprintf("%s:%s", host, port)
-		}
-		connectionHost = strings.Join(hostPortPairs, ",")
-	} else {
-		// Use only the first host when load balancing is disabled
-		// This prevents topology discovery that would return internal Docker IPs
-		connectionHost = fmt.Sprintf("%s:%s", hosts[0], port)
-	}
-
-	connArgs := []string{}
-
-	if sslmode == "" {
-		connArgs = append(connArgs, "sslmode=disable")
-	} else {
-		connArgs = append(connArgs, "sslmode="+sslmode)
-	}
-
-	if loadBalance {
-		connArgs = append(connArgs, "load_balance=true")
-	} else {
-		// When load balancing is disabled, explicitly disable it
-		// fallback_to_topology_keys_only=true ensures client only uses specified nodes
-		// Note: Don't set topology_keys= (empty) as Yugabyte rejects empty topology_keys format
-		connArgs = append(connArgs, "load_balance=false", "fallback_to_topology_keys_only=true")
-	}
-
-	// Construct the connection string
-	connString := fmt.Sprintf(
-		"postgresql://%s:%s@%s/%s?%s",
-		username,
-		password,
-		connectionHost,
-		database,
-		strings.Join(connArgs, "&"),
-	)
-
 	if itest != "" {
 		options.Schema = "itest_" + itest
 	}
 
-	if err := ensureSchemaExists(connString, options.Schema); err != nil {
-		return nil, err
-	}
-	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + options.Schema)
+	// Parse port as integer
+	portInt, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
+		return nil, xerrors.Errorf("invalid port: %w", err)
+	}
+
+	// Build config directly to avoid leaking credentials in error messages.
+	// Note: pgxpool.Config embeds pgx.ConnConfig which embeds pgconn.Config.
+	cfg := &pgxpool.Config{
+		ConnConfig: &pgx.ConnConfig{
+			Config: pgconn.Config{
+				Database: database,
+				User:     username,
+				Password: password,
+				RuntimeParams: map[string]string{
+					"search_path": options.Schema,
+				},
+			},
+		},
+	}
+
+	// Handle SSL mode - sslmode is a libpq parameter, not a runtime param
+	switch sslmode {
+	case "disable", "":
+		// No TLS
+	case "require":
+		cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	case "verify-ca", "verify-full":
+		cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: false}
+	}
+
+	// Configure host(s) based on load balancing mode.
+	// When load balancing is disabled, use only the first host to prevent
+	// Yugabyte client from discovering internal Docker IPs via topology discovery.
+	if loadBalance {
+		// For load balancing, Yugabyte driver expects comma-separated host:port pairs
+		hostPortPairs := make([]string, len(hosts))
+		for i, host := range hosts {
+			hostPortPairs[i] = fmt.Sprintf("%s:%s", host, port)
+		}
+		cfg.ConnConfig.Host = strings.Join(hostPortPairs, ",")
+		// Port is embedded in host string when using multiple hosts
+		cfg.ConnConfig.Port = 0
+		cfg.ConnConfig.RuntimeParams["load_balance"] = "true"
+	} else {
+		cfg.ConnConfig.Host = hosts[0]
+		cfg.ConnConfig.Port = uint16(portInt)
+		// Explicitly disable load balancing and topology discovery
+		cfg.ConnConfig.RuntimeParams["load_balance"] = "false"
+		cfg.ConnConfig.RuntimeParams["fallback_to_topology_keys_only"] = "true"
+	}
+
+	if err := ensureSchemaExists(&cfg.ConnConfig.Config, options.Schema); err != nil {
 		return nil, err
 	}
+
 	if options.PoolConfig != nil {
 		cfg.MaxConns = int32(options.PoolConfig.MaxConnections)
 		cfg.MinConns = int32(options.PoolConfig.MinConnections)
 		cfg.MaxConnLifetime = options.PoolConfig.MaxConnectionLifetime
 		cfg.MaxConnIdleTime = options.PoolConfig.MaxIdleTime
-	}
-
-	// When load balancing is disabled, restrict the pool to only use the specified host
-	// This prevents Yugabyte client from discovering and connecting to internal Docker IPs
-	if !loadBalance {
-		// Parse port as integer
-		portInt, err := strconv.ParseUint(port, 10, 16)
-		if err != nil {
-			return nil, xerrors.Errorf("invalid port: %w", err)
-		}
-
-		// Override the connection config to use only our specified host
-		cfg.ConnConfig.Host = hosts[0]
-		cfg.ConnConfig.Port = uint16(portInt)
-
-		// Note: Yugabyte-specific connection parameters (load_balance, fallback_to_topology_keys_only)
-		// must be set in the connection string, not as runtime parameters.
-		// The connection string already has these parameters set above.
 	}
 
 	cfg.ConnConfig.OnNotice = func(conn *pgconn.PgConn, n *pgconn.Notice) {
@@ -358,13 +347,16 @@ func (db *DB) ITestDeleteAll() {
 var schemaREString = "^[A-Za-z0-9_]+$"
 var schemaRE = regexp.MustCompile(schemaREString)
 
-func ensureSchemaExists(connString, schema string) error {
+func ensureSchemaExists(connCfg *pgconn.Config, schema string) error {
 	// FUTURE allow using fallback DBs for start-up.
 	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(3*time.Second))
-	p, err := pgx.Connect(ctx, connString)
 	defer cncl()
+
+	// Build pgx.ConnConfig from pgconn.Config
+	pgxCfg := &pgx.ConnConfig{Config: *connCfg}
+	p, err := pgx.ConnectConfig(ctx, pgxCfg)
 	if err != nil {
-		return xerrors.Errorf("unable to connect to db: %s, err: %v", connString, err)
+		return xerrors.Errorf("unable to connect to db: %w", err)
 	}
 	defer func() { _ = p.Close(context.Background()) }()
 
@@ -592,4 +584,15 @@ func findFileStartingWith(fs embed.FS, prefix string) (string, error) {
 		}
 	}
 	return "", xerrors.New("file not found")
+}
+
+func errFilter(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "host") || strings.Contains(err.Error(), "port") || strings.Contains(err.Error(), "postgres://") {
+		logger.Error("redacted db error: " + err.Error())
+		return xerrors.New("redacted db error")
+	}
+	return err
 }

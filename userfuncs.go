@@ -24,11 +24,11 @@ func backoffForSerializationError[T any](f func() (T, error)) (res T, err error)
 	for _, backoff := range backoffs {
 		res, err = f()
 		if !IsErrSerialization(err) {
-			return res, nil
+			return res, errFilter(err)
 		}
 		time.Sleep(backoff)
 	}
-	return res, fmt.Errorf("failed to execute function: %w", err)
+	return res, fmt.Errorf("failed to execute function: %w", errFilter(err))
 }
 
 // rawStringOnly is _intentionally_private_ to force only basic strings in SQL queries.
@@ -51,7 +51,7 @@ func (db *DB) Exec(ctx context.Context, sql rawStringOnly, arguments ...any) (co
 		return db.pgx.Exec(ctx, string(sql), arguments...)
 	})
 	if err != nil {
-		return 0, err
+		return 0, errFilter(err)
 	}
 
 	return int(res.RowsAffected()), nil
@@ -92,7 +92,7 @@ func (db *DB) Query(ctx context.Context, sql rawStringOnly, arguments ...any) (*
 	q, err := backoffForSerializationError(func() (pgx.Rows, error) {
 		return db.pgx.Query(ctx, string(sql), arguments...)
 	})
-	return &Query{q}, err
+	return &Query{q}, errFilter(err)
 }
 
 // StructScan allows scanning a single row into a struct.
@@ -108,7 +108,7 @@ type Row interface {
 
 type rowErr struct{}
 
-func (rowErr) Scan(_ ...any) error { return errTx }
+func (rowErr) Scan(_ ...any) error { return errFilter(errTx) }
 
 // QueryRow gets 1 row using column order matching.
 // This is a timesaver for the special case of wanting the first row returned only.
@@ -165,10 +165,10 @@ func (db *DB) Select(ctx context.Context, sliceOfStructPtr any, sql rawStringOnl
 		return db.pgx.Query(ctx, string(sql), arguments...)
 	})
 	if err != nil {
-		return err
+		return errFilter(err)
 	}
 	defer rows.Close()
-	return dbscan.ScanAll(sliceOfStructPtr, dbscanRows{rows})
+	return errFilter(dbscan.ScanAll(sliceOfStructPtr, dbscanRows{rows}))
 }
 
 type Tx struct {
@@ -234,9 +234,9 @@ func (db *DB) transactionInner(ctx context.Context, f func(*Tx) (commit bool, er
 		ptx, err := db.pgx.BeginTx(ctx, pgx.TxOptions{})
 		started = true
 		tx.tx = func() (pgx.Tx, error) {
-			return ptx, err
+			return ptx, errFilter(err)
 		}
-		return ptx, err
+		return ptx, errFilter(err)
 	}
 	var commit bool
 	defer func() { // Panic clean-up.
@@ -252,16 +252,16 @@ func (db *DB) transactionInner(ctx context.Context, f func(*Tx) (commit bool, er
 	}()
 	commit, err := f(tx)
 	if err != nil {
-		return false, err
+		return false, errFilter(err)
 	}
 	if commit && started {
 		tx, err := tx.tx()
 		if err != nil {
-			return false, err
+			return false, errFilter(err)
 		}
 		err = tx.Commit(ctx)
 		if err != nil {
-			return false, err
+			return false, errFilter(err)
 		}
 		return true, nil
 	}
@@ -272,11 +272,11 @@ func (db *DB) transactionInner(ctx context.Context, f func(*Tx) (commit bool, er
 func (t *Tx) Exec(sql rawStringOnly, arguments ...any) (count int, err error) {
 	tx, err := t.tx()
 	if err != nil {
-		return 0, err
+		return 0, errFilter(err)
 	}
 	ctag, err := tx.Exec(t.ctx, string(sql), arguments...)
 	if err != nil {
-		return 0, err
+		return 0, errFilter(err)
 	}
 	return int(ctag.RowsAffected()), nil
 }
@@ -285,10 +285,10 @@ func (t *Tx) Exec(sql rawStringOnly, arguments ...any) (count int, err error) {
 func (t *Tx) Query(sql rawStringOnly, arguments ...any) (*Query, error) {
 	tx, err := t.tx()
 	if err != nil {
-		return nil, err
+		return nil, errFilter(err)
 	}
 	q, err := tx.Query(t.ctx, string(sql), arguments...)
-	return &Query{q}, err
+	return &Query{q}, errFilter(err)
 }
 
 // QueryRow in a transaction.
@@ -304,7 +304,7 @@ func (t *Tx) QueryRow(sql rawStringOnly, arguments ...any) Row {
 func (t *Tx) SendBatch(ctx context.Context, b *pgx.Batch) (pgx.BatchResults, error) {
 	tx, err := t.tx()
 	if err != nil {
-		return nil, err
+		return nil, errFilter(err)
 	}
 	return tx.SendBatch(ctx, b), nil
 }
@@ -313,10 +313,10 @@ func (t *Tx) SendBatch(ctx context.Context, b *pgx.Batch) (pgx.BatchResults, err
 func (t *Tx) Select(sliceOfStructPtr any, sql rawStringOnly, arguments ...any) error {
 	rows, err := t.Query(sql, arguments...)
 	if err != nil {
-		return fmt.Errorf("scany: query multiple result rows: %w", err)
+		return fmt.Errorf("scany: query multiple result rows: %w", errFilter(err))
 	}
 	defer rows.Close()
-	return dbscan.ScanAll(sliceOfStructPtr, dbscanRows{rows.Qry.(pgx.Rows)})
+	return errFilter(dbscan.ScanAll(sliceOfStructPtr, dbscanRows{rows.Qry.(pgx.Rows)}))
 }
 
 func IsErrUniqueContraint(err error) bool {
