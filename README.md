@@ -1,4 +1,4 @@
-# HarmonyDB
+# HarmonyQuery
 
 A Postgres/Yugabyte adapter in harmony with busy developers. The top few dev mistakes with DB
 
@@ -21,7 +21,7 @@ A Postgres/Yugabyte adapter in harmony with busy developers. The top few dev mis
 ## Installation
 
 ```bash
-go get github.com/curiostorage/harmonydb
+go get github.com/curiostorage/harmonyquery
 ```
 
 ## Usage
@@ -31,7 +31,7 @@ package main
 
 import (
     "context"
-    "github.com/curiostorage/harmonydb"
+    "github.com/curiostorage/harmonyquery"
 )
 
 //go:embed sql
@@ -41,7 +41,7 @@ var upgradeFS embed.FS
 var downgradeFS embed.FS
 
 func main() {
-    db, err := harmonydb.NewFromConfig(harmonydb.Config{
+    db, err := harmonyquery.NewFromConfig(harmonyquery.Config{
         Hosts:       []string{"localhost"},
         Username:    "yugabyte",
         Password:    "yugabyte",
@@ -75,7 +75,7 @@ func main() {
     err = db.QueryRow(ctx, "SELECT name FROM users WHERE id = $1", 1).Scan(&name)
     
     // Transactions
-    committed, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+    committed, err := db.BeginTransaction(ctx, func(tx *harmonyquery.Tx) (bool, error) {
         _, err := tx.Exec("UPDATE users SET name = $1 WHERE id = $2", "Bob", 1)
         if err != nil {
             return false, err

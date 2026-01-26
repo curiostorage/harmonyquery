@@ -1,4 +1,4 @@
-package harmonydb
+package harmonyquery
 
 import (
 	"context"
@@ -43,7 +43,7 @@ type DB struct {
 	downgradeEmbedFS embed.FS
 }
 
-var logger = logging.Logger("harmonydb")
+var logger = logging.Logger("harmonyquery")
 
 type Config struct {
 	// HOSTS is a list of hostnames to nodes running YugabyteDB
@@ -94,10 +94,10 @@ func envElse(env, els string) string {
 	return els
 }
 
-var DefaultHostEnv = "HARMONYDB_HOSTS"
+var DefaultHostEnv = "HARMONYQUERY_HOSTS"
 
 func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
-	logger.Infof("HARMONYDB_HOSTS: %s", os.Getenv(DefaultHostEnv))
+	logger.Infof("%s: %s", DefaultHostEnv, os.Getenv(DefaultHostEnv))
 	db, err := New(
 		[]string{envElse(DefaultHostEnv, "127.0.0.1")},
 		"yugabyte",

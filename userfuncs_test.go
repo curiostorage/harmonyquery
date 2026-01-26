@@ -1,4 +1,4 @@
-package harmonydb
+package harmonyquery
 
 // tests for BTFP mechanism - may be sensitive to Go version/inlining
 

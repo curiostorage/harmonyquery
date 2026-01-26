@@ -1,4 +1,4 @@
-package harmonydb
+package harmonyquery
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func backoffForSerializationError[T any](f func() (T, error)) (res T, err error)
 // rawStringOnly is _intentionally_private_ to force only basic strings in SQL queries.
 // In any package, raw strings will satisfy compilation.  Ex:
 //
-//	harmonydb.Exec("INSERT INTO version (number) VALUES (1)")
+//	harmonyquery.Exec("INSERT INTO version (number) VALUES (1)")
 //
 // This prevents SQL injection attacks where the input contains query fragments.
 type rawStringOnly string

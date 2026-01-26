@@ -1,4 +1,4 @@
-module github.com/curiostorage/harmonydb
+module github.com/curiostorage/harmonyquery
 
 go 1.24.0
 

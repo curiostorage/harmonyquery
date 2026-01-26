@@ -1,4 +1,4 @@
-package harmonydb
+package harmonyquery
 
 import (
 	"errors"

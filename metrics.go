@@ -1,4 +1,4 @@
-package harmonydb
+package harmonyquery
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
