@@ -139,9 +139,6 @@ func NewFromConfig(options Config) (*DB, error) {
 		options.Schema = DefaultSchema
 	}
 
-	if options.SSLMode == "" {
-		options.SSLMode = "disable"
-	}
 	hosts, username, password, database, port, loadBalance, sslmode := options.Hosts, options.Username, options.Password, options.Database, options.Port, options.LoadBalance, options.SSLMode
 	itest := string(options.ITestID)
 
