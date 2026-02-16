@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"runtime"
 	"time"
 
@@ -317,6 +318,96 @@ func (t *Tx) Select(sliceOfStructPtr any, sql rawStringOnly, arguments ...any) e
 	}
 	defer rows.Close()
 	return errFilter(dbscan.ScanAll(sliceOfStructPtr, dbscanRows{rows.Qry.(pgx.Rows)}))
+}
+
+// Iter returns an iterator that scans each row into a value of type T.
+// T is typically a struct with fields matching the query's columns (via name
+// or `db` tags), but a single-column result can scan into a primitive type.
+// The underlying cursor is closed automatically when the iterator finishes
+// or the caller breaks out of the loop.
+//
+// On any error (query, scan, or cursor), iteration stops and *errOut is set.
+//
+// Example:
+//
+//	var err error
+//	for user := range harmonyquery.Iter[User](db, ctx, &err, "SELECT name, id FROM users WHERE active = $1", true) {
+//	    fmt.Println(user.Name, user.ID)
+//	}
+//	if err != nil {
+//	    return err
+//	}
+func Iter[T any](db *DB, ctx context.Context, errOut *error, sql rawStringOnly, args ...any) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		if db.usedInTransaction() {
+			*errOut = errTx
+			return
+		}
+		rows, err := backoffForSerializationError(func() (pgx.Rows, error) {
+			return db.pgx.Query(ctx, string(sql), args...)
+		})
+		if err != nil {
+			*errOut = errFilter(err)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var item T
+			if err := dbscan.ScanRow(&item, dbscanRows{rows}); err != nil {
+				*errOut = errFilter(err)
+				return
+			}
+			if !yield(item) {
+				return
+			}
+		}
+		if err := rows.Err(); err != nil {
+			*errOut = errFilter(err)
+		}
+	}
+}
+
+// TxIter is the transaction variant of [Iter]. It returns an iterator that
+// scans each row into a value of type T within an open transaction.
+//
+// Example:
+//
+//	db.BeginTransaction(ctx, func(tx *Tx) (bool, error) {
+//	    var err error
+//	    for user := range harmonyquery.TxIter[User](tx, &err, "SELECT name, id FROM users") {
+//	        fmt.Println(user.Name, user.ID)
+//	    }
+//	    return err == nil, err
+//	})
+func TxIter[T any](tx *Tx, errOut *error, sql rawStringOnly, args ...any) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		ptx, err := tx.tx()
+		if err != nil {
+			*errOut = errFilter(err)
+			return
+		}
+		rows, err := ptx.Query(tx.ctx, string(sql), args...)
+		if err != nil {
+			*errOut = errFilter(err)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var item T
+			if err := dbscan.ScanRow(&item, dbscanRows{rows}); err != nil {
+				*errOut = errFilter(err)
+				return
+			}
+			if !yield(item) {
+				return
+			}
+		}
+		if err := rows.Err(); err != nil {
+			*errOut = errFilter(err)
+		}
+	}
 }
 
 func IsErrUniqueContraint(err error) bool {
