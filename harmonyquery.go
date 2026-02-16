@@ -7,7 +7,9 @@ import (
 	"maps"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
@@ -70,6 +72,10 @@ type Config struct {
 
 	// Schema to use for the connection
 	Schema string
+
+	// ApplicationName is sent to PostgreSQL as the application_name connection parameter,
+	// visible in pg_stat_activity. Defaults to the binary name (os.Args[0]).
+	ApplicationName string
 
 	SqlEmbedFS *embed.FS
 
@@ -139,6 +145,10 @@ func NewFromConfig(options Config) (*DB, error) {
 		options.Schema = DefaultSchema
 	}
 
+	if options.ApplicationName == "" {
+		options.ApplicationName = filepath.Base(os.Args[0])
+	}
+
 	hosts, username, password, database, port, loadBalance, sslmode := options.Hosts, options.Username, options.Password, options.Database, options.Port, options.LoadBalance, options.SSLMode
 	itest := string(options.ITestID)
 
@@ -165,7 +175,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		connectionHost = fmt.Sprintf("%s:%s", hosts[0], port)
 	}
 
-	connArgs := []string{}
+	connArgs := []string{"application_name=" + url.QueryEscape(options.ApplicationName)}
 
 	if sslmode == "" {
 		connArgs = append(connArgs, "sslmode=disable")
