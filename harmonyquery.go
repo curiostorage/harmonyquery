@@ -206,7 +206,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		options.Schema = "itest_" + itest
 	}
 
-	if err := ensureSchemaExists(connString, options.Schema); err != nil {
+	if err := ensureSchemaExists(connString, options.Schema, password); err != nil {
 		return nil, err
 	}
 	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + options.Schema)
@@ -366,13 +366,18 @@ func (db *DB) ITestDeleteAll() {
 var schemaREString = "^[A-Za-z0-9_]+$"
 var schemaRE = regexp.MustCompile(schemaREString)
 
-func ensureSchemaExists(connString, schema string) error {
+func ensureSchemaExists(connString, schema, password string) error {
 	// FUTURE allow using fallback DBs for start-up.
 	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(3*time.Second))
-	p, err := pgx.Connect(ctx, connString)
 	defer cncl()
+	cfg, err := pgx.ParseConfig(connString)
 	if err != nil {
-		return xerrors.Errorf("unable to connect to db: %s, err: %v", connString, err)
+		return xerrors.Errorf("unable to parse db config: %v", err)
+	}
+	cfg.Password = password
+	p, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return xerrors.Errorf("unable to connect to db: %v", err)
 	}
 	defer func() { _ = p.Close(context.Background()) }()
 
