@@ -38,6 +38,8 @@ type DB struct {
 	pgx              *pgxpool.Pool
 	cfg              *pgxpool.Config
 	schema           string
+	itestBaseDB      string    // when set, ITestDeleteAll uses DROP DATABASE
+	itestConn        connParams // when itestBaseDB set, used to connect back for DROP
 	hostnames        []string
 	BTFPOnce         sync.Once
 	BTFP             uintptr // A PC only in your stack when you call BeginTransaction()
@@ -124,6 +126,62 @@ func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
 
 var DefaultSchema = "curio"
 
+const itestTemplateDatabase = "itest_template"
+
+var itestMutex sync.Mutex
+
+// connParams holds connection parameters for building conn strings and one-off connections.
+type connParams struct {
+	username string
+	host     string // host:port or host1:port,host2:port
+	connArgs string
+}
+
+func buildConnParams(options Config, hosts []string, port string) connParams {
+	var host string
+	if options.LoadBalance {
+		pairs := make([]string, len(hosts))
+		for i, h := range hosts {
+			pairs[i] = fmt.Sprintf("%s:%s", h, port)
+		}
+		host = strings.Join(pairs, ",")
+	} else {
+		host = fmt.Sprintf("%s:%s", hosts[0], port)
+	}
+	args := []string{"application_name=" + url.QueryEscape(options.ApplicationName)}
+	if options.SSLMode == "" {
+		args = append(args, "sslmode=disable")
+	} else {
+		args = append(args, "sslmode="+options.SSLMode)
+	}
+	if options.LoadBalance {
+		args = append(args, "load_balance=true")
+	} else {
+		args = append(args, "load_balance=false", "fallback_to_topology_keys_only=true")
+	}
+	return connParams{username: options.Username, host: host, connArgs: strings.Join(args, "&")}
+}
+
+func (c connParams) string(database string) string {
+	return fmt.Sprintf("postgresql://%s:%s@%s/%s?%s", c.username, "********", c.host, database, c.connArgs)
+}
+
+func (c connParams) runWithConn(password, database string, timeout time.Duration, fn func(*pgx.Conn) error) error {
+	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(timeout))
+	defer cncl()
+	cfg, err := pgx.ParseConfig(c.string(database))
+	if err != nil {
+		return err
+	}
+	cfg.Password = password
+	p, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = p.Close(context.Background()) }()
+	return fn(p)
+}
+
 // New is to be called once per binary to establish the pool.
 // log() is for errors. It returns an upgraded database's connection.
 // This entry point serves both production and integration tests, so it's more DI.
@@ -149,7 +207,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		options.ApplicationName = filepath.Base(os.Args[0])
 	}
 
-	hosts, username, password, database, port, loadBalance, sslmode := options.Hosts, options.Username, options.Password, options.Database, options.Port, options.LoadBalance, options.SSLMode
+	hosts, password, database, port, loadBalance := options.Hosts, options.Password, options.Database, options.Port, options.LoadBalance
 	itest := string(options.ITestID)
 
 	if len(hosts) == 0 {
@@ -159,98 +217,54 @@ func NewFromConfig(options Config) (*DB, error) {
 	// Debug: Log which path we're taking
 	logger.Infof("Yugabyte connection config: loadBalance=%v, hosts=%v, port=%s", loadBalance, hosts, port)
 
-	// When load balancing is disabled, use only the first host to prevent
-	// Yugabyte client from discovering internal Docker IPs via topology discovery
-	var connectionHost string
-	if loadBalance {
-		// Join all hosts with the port for load balancing
-		hostPortPairs := make([]string, len(hosts))
-		for i, host := range hosts {
-			hostPortPairs[i] = fmt.Sprintf("%s:%s", host, port)
-		}
-		connectionHost = strings.Join(hostPortPairs, ",")
-	} else {
-		// Use only the first host when load balancing is disabled
-		// This prevents topology discovery that would return internal Docker IPs
-		connectionHost = fmt.Sprintf("%s:%s", hosts[0], port)
-	}
+	conn := buildConnParams(options, hosts, port)
+	connString := conn.string(database)
 
-	connArgs := []string{"application_name=" + url.QueryEscape(options.ApplicationName)}
-
-	if sslmode == "" {
-		connArgs = append(connArgs, "sslmode=disable")
-	} else {
-		connArgs = append(connArgs, "sslmode="+sslmode)
-	}
-
-	if loadBalance {
-		connArgs = append(connArgs, "load_balance=true")
-	} else {
-		// When load balancing is disabled, explicitly disable it
-		// fallback_to_topology_keys_only=true ensures client only uses specified nodes
-		// Note: Don't set topology_keys= (empty) as Yugabyte rejects empty topology_keys format
-		connArgs = append(connArgs, "load_balance=false", "fallback_to_topology_keys_only=true")
-	}
-
-	// Construct the connection string
-	connString := fmt.Sprintf(
-		"postgresql://%s:%s@%s/%s?%s",
-		username,
-		"********",
-		connectionHost,
-		database,
-		strings.Join(connArgs, "&"),
-	)
-
+	skipUpgrade := false
+	itestBaseDB := ""
 	if itest != "" {
-		options.Schema = "itest_" + itest
-	}
+		itestMutex.Lock()
+		defer itestMutex.Unlock()
 
-	if err := ensureSchemaExists(connString, options.Schema, password); err != nil {
+		if err := ensureTemplateDatabase(conn, password, database, options); err != nil {
+			return nil, xerrors.Errorf("ensure itest template database: %w", err)
+		}
+
+		itestDB := "itest_" + itest
+		if err := conn.runWithConn(password, database, 30*time.Second, func(p *pgx.Conn) error {
+			_, err := p.Exec(context.Background(), "CREATE DATABASE "+itestDB+" TEMPLATE "+itestTemplateDatabase)
+			return err
+		}); err != nil {
+			return nil, xerrors.Errorf("create itest database: %w", err)
+		}
+
+		options.Database = itestDB
+		options.Schema = "public"
+		connString = conn.string(itestDB)
+		itestBaseDB = database
+		skipUpgrade = true
+	} else if err := ensureSchemaExists(conn, options.Schema, password, database); err != nil {
 		return nil, err
 	}
-	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + options.Schema)
+
+	cfg, err := buildPoolConfig(connString, options, hosts, port)
 	if err != nil {
 		return nil, err
 	}
-	cfg.ConnConfig.Password = password
-	if options.PoolConfig != nil {
-		cfg.MaxConns = int32(options.PoolConfig.MaxConnections)
-		cfg.MinConns = int32(options.PoolConfig.MinConnections)
-		cfg.MaxConnLifetime = options.PoolConfig.MaxConnectionLifetime
-		cfg.MaxConnIdleTime = options.PoolConfig.MaxIdleTime
-	}
-
-	// When load balancing is disabled, restrict the pool to only use the specified host
-	// This prevents Yugabyte client from discovering and connecting to internal Docker IPs
-	if !loadBalance {
-		// Parse port as integer
-		portInt, err := strconv.ParseUint(port, 10, 16)
-		if err != nil {
-			return nil, xerrors.Errorf("invalid port: %w", err)
-		}
-
-		// Override the connection config to use only our specified host
-		cfg.ConnConfig.Host = hosts[0]
-		cfg.ConnConfig.Port = uint16(portInt)
-
-		// Note: Yugabyte-specific connection parameters (load_balance, fallback_to_topology_keys_only)
-		// must be set in the connection string, not as runtime parameters.
-		// The connection string already has these parameters set above.
-	}
-
 	cfg.ConnConfig.OnNotice = func(conn *pgconn.PgConn, n *pgconn.Notice) {
 		logger.Debug("database notice: " + n.Message + ": " + n.Detail)
 		DBMeasures.Errors.M(1)
 	}
 
-	db := DB{cfg: cfg, schema: options.Schema, hostnames: hosts, sqlEmbedFS: *options.SqlEmbedFS, downgradeEmbedFS: *options.DowngradeEmbedFS} // pgx populated in AddStatsAndConnect
+	db := DB{cfg: cfg, schema: options.Schema, itestBaseDB: itestBaseDB, itestConn: conn, hostnames: hosts, sqlEmbedFS: *options.SqlEmbedFS, downgradeEmbedFS: *options.DowngradeEmbedFS} // pgx populated in AddStatsAndConnect
 	if err := db.addStatsAndConnect(); err != nil {
 		return nil, err
 	}
 
-	if err = db.upgrade(); err != nil {
-		return nil, err
+	if !skipUpgrade {
+		if err = db.upgrade(); err != nil {
+			return nil, err
+		}
 	}
 
 	return &db, db.setBTFP()
@@ -351,44 +365,108 @@ func (db *DB) addStatsAndConnect() error {
 // ITestDeleteAll will delete everything created for "this" integration test.
 // This must be called at the end of each integration test.
 func (db *DB) ITestDeleteAll() {
-	if !strings.HasPrefix(db.schema, "itest_") {
-		logger.Warn("Warning: this should never be called on anything but an itest schema.")
+	if db.itestBaseDB == "" {
+		logger.Warn("Warning: this should never be called on anything but an itest database.")
 		return
 	}
-	defer db.pgx.Close()
-	_, err := db.pgx.Exec(context.Background(), "DROP SCHEMA "+db.schema+" CASCADE")
-	if err != nil {
-		logger.Warn("warning: unclean itest shutdown: cannot delete schema: " + err.Error())
+	itestDB := db.cfg.ConnConfig.Database
+	db.pgx.Close()
+	if !schemaRE.MatchString(itestDB) {
+		logger.Warn("warning: unclean itest shutdown: invalid database name")
 		return
+	}
+	err := db.itestConn.runWithConn(db.cfg.ConnConfig.Password, db.itestBaseDB, 10*time.Second, func(p *pgx.Conn) error {
+		_, err := p.Exec(context.Background(), "DROP DATABASE "+itestDB)
+		return err
+	})
+	if err != nil {
+		logger.Warn("warning: unclean itest shutdown: cannot drop database: " + err.Error())
 	}
 }
 
 var schemaREString = "^[A-Za-z0-9_]+$"
 var schemaRE = regexp.MustCompile(schemaREString)
 
-func ensureSchemaExists(connString, schema, password string) error {
-	// FUTURE allow using fallback DBs for start-up.
-	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(3*time.Second))
-	defer cncl()
-	cfg, err := pgx.ParseConfig(connString)
-	if err != nil {
-		return xerrors.Errorf("unable to parse db config: %v", err)
-	}
-	cfg.Password = password
-	p, err := pgx.ConnectConfig(ctx, cfg)
-	if err != nil {
-		return xerrors.Errorf("unable to connect to db: %v", err)
-	}
-	defer func() { _ = p.Close(context.Background()) }()
-
+func ensureSchemaExists(conn connParams, schema, password, database string) error {
 	if len(schema) < 5 || !schemaRE.MatchString(schema) {
 		return xerrors.New("schema must be of the form " + schemaREString + "\n Got: " + schema)
 	}
-
-	_, err = backoffForSerializationError(func() (pgconn.CommandTag, error) {
-		return p.Exec(context.Background(), "CREATE SCHEMA IF NOT EXISTS "+schema)
+	return conn.runWithConn(password, database, 3*time.Second, func(p *pgx.Conn) error {
+		_, err := backoffForSerializationError(func() (pgconn.CommandTag, error) {
+			return p.Exec(context.Background(), "CREATE SCHEMA IF NOT EXISTS "+schema)
+		})
+		return err
 	})
-	return err
+}
+
+func ensureTemplateDatabase(conn connParams, password, baseDB string, options Config) error {
+	if err := conn.runWithConn(password, baseDB, 60*time.Second, func(p *pgx.Conn) error {
+		if _, err := p.Exec(context.Background(), "DROP DATABASE IF EXISTS "+itestTemplateDatabase); err != nil {
+			return err
+		}
+		_, err := p.Exec(context.Background(), "CREATE DATABASE "+itestTemplateDatabase+" TEMPLATE template0")
+		return err
+	}); err != nil {
+		return xerrors.Errorf("create template database: %w", err)
+	}
+
+	templateOpts := options
+	templateOpts.Database = itestTemplateDatabase
+	templateOpts.Schema = "public"
+	templateOpts.ITestID = ""
+	templateDB, err := connectAndUpgrade(conn.string(itestTemplateDatabase), templateOpts)
+	if err != nil {
+		return xerrors.Errorf("upgrade template database: %w", err)
+	}
+	templateDB.pgx.Close()
+	return nil
+}
+
+// buildPoolConfig creates a pgxpool.Config from connString and options.
+func buildPoolConfig(connString string, options Config, hosts []string, port string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(connString + "&search_path=" + options.Schema)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.Password = options.Password
+	if options.PoolConfig != nil {
+		cfg.MaxConns = int32(options.PoolConfig.MaxConnections)
+		cfg.MinConns = int32(options.PoolConfig.MinConnections)
+		cfg.MaxConnLifetime = options.PoolConfig.MaxConnectionLifetime
+		cfg.MaxConnIdleTime = options.PoolConfig.MaxIdleTime
+	}
+	if !options.LoadBalance && len(hosts) > 0 {
+		portInt, err := strconv.ParseUint(port, 10, 16)
+		if err != nil {
+			return nil, xerrors.Errorf("invalid port: %w", err)
+		}
+		cfg.ConnConfig.Host = hosts[0]
+		cfg.ConnConfig.Port = uint16(portInt)
+	}
+	return cfg, nil
+}
+
+// connectAndUpgrade creates a pool, connects, runs upgrade, and returns the DB. Caller owns the pool.
+func connectAndUpgrade(connString string, options Config) (*DB, error) {
+	cfg, err := buildPoolConfig(connString, options, options.Hosts, options.Port)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+	defer cncl()
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	db := DB{
+		pgx: pool, cfg: cfg, schema: options.Schema,
+		hostnames: options.Hosts, sqlEmbedFS: *options.SqlEmbedFS, downgradeEmbedFS: *options.DowngradeEmbedFS,
+	}
+	if err := db.upgrade(); err != nil {
+		db.pgx.Close()
+		return nil, err
+	}
+	return &db, nil
 }
 
 var ITestUpgradeFunc func(*pgxpool.Pool, string, string)
