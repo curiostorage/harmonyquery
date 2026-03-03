@@ -128,7 +128,11 @@ var DefaultSchema = "curio"
 
 const itestTemplateDatabase = "itest_template"
 
-var itestMutex sync.Mutex
+var (
+	itestMutex       sync.Mutex
+	itestTemplateOnce sync.Once
+	itestTemplateErr  error
+)
 
 // connParams holds connection parameters for building conn strings and one-off connections.
 type connParams struct {
@@ -400,6 +404,13 @@ func ensureSchemaExists(conn connParams, schema, password, database string) erro
 }
 
 func ensureTemplateDatabase(conn connParams, password, baseDB string, options Config) error {
+	itestTemplateOnce.Do(func() {
+		itestTemplateErr = ensureTemplateDatabaseOnce(conn, password, baseDB, options)
+	})
+	return itestTemplateErr
+}
+
+func ensureTemplateDatabaseOnce(conn connParams, password, baseDB string, options Config) error {
 	if err := conn.runWithConn(password, baseDB, 60*time.Second, func(p *pgx.Conn) error {
 		if _, err := p.Exec(context.Background(), "DROP DATABASE IF EXISTS "+itestTemplateDatabase); err != nil {
 			return err
