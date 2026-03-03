@@ -235,6 +235,9 @@ func NewFromConfig(options Config) (*DB, error) {
 		}
 
 		itestDB := "itest_" + itest
+		if !schemaRE.MatchString(itestDB) {
+			return nil, xerrors.Errorf("invalid itest database name: %q", itestDB)
+		}
 		if err := conn.runWithConn(password, database, 30*time.Second, func(p *pgx.Conn) error {
 			_, err := p.Exec(context.Background(), "CREATE DATABASE "+itestDB+" TEMPLATE "+itestTemplateDatabase)
 			return err
