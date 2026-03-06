@@ -38,7 +38,7 @@ type DB struct {
 	pgx              *pgxpool.Pool
 	cfg              *pgxpool.Config
 	schema           string
-	itestBaseDB      string    // when set, ITestDeleteAll uses DROP DATABASE
+	itestBaseDB      string     // when set, ITestDeleteAll uses DROP DATABASE
 	itestConn        connParams // when itestBaseDB set, used to connect back for DROP
 	hostnames        []string
 	BTFPOnce         sync.Once
@@ -129,7 +129,7 @@ var DefaultSchema = "curio"
 const itestTemplateDatabase = "itest_template"
 
 var (
-	itestMutex       sync.Mutex
+	itestMutex        sync.Mutex
 	itestTemplateOnce sync.Once
 	itestTemplateErr  error
 )
@@ -137,6 +137,7 @@ var (
 // connParams holds connection parameters for building conn strings and one-off connections.
 type connParams struct {
 	username string
+	password string
 	host     string // host:port or host1:port,host2:port
 	connArgs string
 }
@@ -163,22 +164,23 @@ func buildConnParams(options Config, hosts []string, port string) connParams {
 	} else {
 		args = append(args, "load_balance=false", "fallback_to_topology_keys_only=true")
 	}
-	return connParams{username: options.Username, host: host, connArgs: strings.Join(args, "&")}
+	return connParams{username: options.Username, password: options.Password, host: host, connArgs: strings.Join(args, "&")}
 }
 
-func (c connParams) string(database string) string {
-	return fmt.Sprintf("postgresql://%s:%s@%s/%s?%s", c.username, "********", c.host, database, c.connArgs)
+// connString returns a connection string with the real password, suitable for pgx parsing.
+func (c connParams) connString(database string) string {
+	return fmt.Sprintf("postgresql://%s:%s@%s/%s?%s", url.QueryEscape(c.username), url.QueryEscape(c.password), c.host, database, c.connArgs)
 }
 
-func (c connParams) runWithConn(password, database string, timeout time.Duration, fn func(*pgx.Conn) error) error {
+// safeString returns a connection string with the password masked, suitable for logging.
+func (c connParams) safeString(database string) string {
+	return fmt.Sprintf("postgresql://%s:%s@%s/%s?%s", url.QueryEscape(c.username), "********", c.host, database, c.connArgs)
+}
+
+func (c connParams) runWithConn(database string, timeout time.Duration, fn func(*pgx.Conn) error) error {
 	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(timeout))
 	defer cncl()
-	cfg, err := pgx.ParseConfig(c.string(database))
-	if err != nil {
-		return err
-	}
-	cfg.Password = password
-	p, err := pgx.ConnectConfig(ctx, cfg)
+	p, err := pgx.Connect(ctx, c.connString(database))
 	if err != nil {
 		return err
 	}
@@ -211,7 +213,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		options.ApplicationName = filepath.Base(os.Args[0])
 	}
 
-	hosts, password, database, port, loadBalance := options.Hosts, options.Password, options.Database, options.Port, options.LoadBalance
+	hosts, database, port, loadBalance := options.Hosts, options.Database, options.Port, options.LoadBalance
 	itest := string(options.ITestID)
 
 	if len(hosts) == 0 {
@@ -222,7 +224,7 @@ func NewFromConfig(options Config) (*DB, error) {
 	logger.Infof("Yugabyte connection config: loadBalance=%v, hosts=%v, port=%s", loadBalance, hosts, port)
 
 	conn := buildConnParams(options, hosts, port)
-	connString := conn.string(database)
+	connString := conn.connString(database)
 
 	skipUpgrade := false
 	itestBaseDB := ""
@@ -230,7 +232,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		itestMutex.Lock()
 		defer itestMutex.Unlock()
 
-		if err := ensureTemplateDatabase(conn, password, database, options); err != nil {
+		if err := ensureTemplateDatabase(conn, database, options); err != nil {
 			return nil, xerrors.Errorf("ensure itest template database: %w", err)
 		}
 
@@ -238,7 +240,7 @@ func NewFromConfig(options Config) (*DB, error) {
 		if !schemaRE.MatchString(itestDB) {
 			return nil, xerrors.Errorf("invalid itest database name: %q", itestDB)
 		}
-		if err := conn.runWithConn(password, database, 30*time.Second, func(p *pgx.Conn) error {
+		if err := conn.runWithConn(database, 30*time.Second, func(p *pgx.Conn) error {
 			_, err := p.Exec(context.Background(), "CREATE DATABASE "+itestDB+" TEMPLATE "+itestTemplateDatabase)
 			return err
 		}); err != nil {
@@ -247,10 +249,10 @@ func NewFromConfig(options Config) (*DB, error) {
 
 		options.Database = itestDB
 		options.Schema = "public"
-		connString = conn.string(itestDB)
+		connString = conn.connString(itestDB)
 		itestBaseDB = database
 		skipUpgrade = true
-	} else if err := ensureSchemaExists(conn, options.Schema, password, database); err != nil {
+	} else if err := ensureSchemaExists(conn, options.Schema, database); err != nil {
 		return nil, err
 	}
 
@@ -382,7 +384,7 @@ func (db *DB) ITestDeleteAll() {
 		logger.Warn("warning: unclean itest shutdown: invalid database name")
 		return
 	}
-	err := db.itestConn.runWithConn(db.cfg.ConnConfig.Password, db.itestBaseDB, 10*time.Second, func(p *pgx.Conn) error {
+	err := db.itestConn.runWithConn(db.itestBaseDB, 10*time.Second, func(p *pgx.Conn) error {
 		_, err := p.Exec(context.Background(), "DROP DATABASE "+itestDB)
 		return err
 	})
@@ -394,11 +396,11 @@ func (db *DB) ITestDeleteAll() {
 var schemaREString = "^[A-Za-z0-9_]+$"
 var schemaRE = regexp.MustCompile(schemaREString)
 
-func ensureSchemaExists(conn connParams, schema, password, database string) error {
+func ensureSchemaExists(conn connParams, schema, database string) error {
 	if len(schema) < 5 || !schemaRE.MatchString(schema) {
 		return xerrors.New("schema must be of the form " + schemaREString + "\n Got: " + schema)
 	}
-	return conn.runWithConn(password, database, 3*time.Second, func(p *pgx.Conn) error {
+	return conn.runWithConn(database, 3*time.Second, func(p *pgx.Conn) error {
 		_, err := backoffForSerializationError(func() (pgconn.CommandTag, error) {
 			return p.Exec(context.Background(), "CREATE SCHEMA IF NOT EXISTS "+schema)
 		})
@@ -406,15 +408,15 @@ func ensureSchemaExists(conn connParams, schema, password, database string) erro
 	})
 }
 
-func ensureTemplateDatabase(conn connParams, password, baseDB string, options Config) error {
+func ensureTemplateDatabase(conn connParams, baseDB string, options Config) error {
 	itestTemplateOnce.Do(func() {
-		itestTemplateErr = ensureTemplateDatabaseOnce(conn, password, baseDB, options)
+		itestTemplateErr = ensureTemplateDatabaseOnce(conn, baseDB, options)
 	})
 	return itestTemplateErr
 }
 
-func ensureTemplateDatabaseOnce(conn connParams, password, baseDB string, options Config) error {
-	if err := conn.runWithConn(password, baseDB, 60*time.Second, func(p *pgx.Conn) error {
+func ensureTemplateDatabaseOnce(conn connParams, baseDB string, options Config) error {
+	if err := conn.runWithConn(baseDB, 60*time.Second, func(p *pgx.Conn) error {
 		if _, err := p.Exec(context.Background(), "DROP DATABASE IF EXISTS "+itestTemplateDatabase); err != nil {
 			return err
 		}
@@ -428,7 +430,7 @@ func ensureTemplateDatabaseOnce(conn connParams, password, baseDB string, option
 	templateOpts.Database = itestTemplateDatabase
 	templateOpts.Schema = "public"
 	templateOpts.ITestID = ""
-	templateDB, err := connectAndUpgrade(conn.string(itestTemplateDatabase), templateOpts)
+	templateDB, err := connectAndUpgrade(conn.connString(itestTemplateDatabase), templateOpts)
 	if err != nil {
 		return xerrors.Errorf("upgrade template database: %w", err)
 	}
@@ -442,7 +444,6 @@ func buildPoolConfig(connString string, options Config, hosts []string, port str
 	if err != nil {
 		return nil, err
 	}
-	cfg.ConnConfig.Password = options.Password
 	if options.PoolConfig != nil {
 		cfg.MaxConns = int32(options.PoolConfig.MaxConnections)
 		cfg.MinConns = int32(options.PoolConfig.MinConnections)
