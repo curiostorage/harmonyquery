@@ -107,9 +107,11 @@ type Row interface {
 	Scan(...any) error
 }
 
-type rowErr struct{}
+type rowErr struct {
+	err error
+}
 
-func (rowErr) Scan(_ ...any) error { return errFilter(errTx) }
+func (r rowErr) Scan(_ ...any) error { return errFilter(r.err) }
 
 // QueryRow gets 1 row using column order matching.
 // This is a timesaver for the special case of wanting the first row returned only.
@@ -120,7 +122,7 @@ func (rowErr) Scan(_ ...any) error { return errFilter(errTx) }
 //	err := db.QueryRow(ctx, "SELECT name, pet FROM users WHERE ID=?", ID).Scan(&name, &pet)
 func (db *DB) QueryRow(ctx context.Context, sql rawStringOnly, arguments ...any) Row {
 	if db.usedInTransaction() {
-		return rowErr{}
+		return rowErr{err: errTx}
 	}
 	return db.pgx.QueryRow(ctx, string(sql), arguments...)
 }
@@ -296,7 +298,7 @@ func (t *Tx) Query(sql rawStringOnly, arguments ...any) (*Query, error) {
 func (t *Tx) QueryRow(sql rawStringOnly, arguments ...any) Row {
 	tx, err := t.tx()
 	if err != nil {
-		return rowErr{}
+		return rowErr{err: err}
 	}
 	return tx.QueryRow(t.ctx, string(sql), arguments...)
 }
