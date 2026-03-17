@@ -4,12 +4,14 @@ package harmonyquery
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
+	"github.com/yugabyte/pgx/v5"
 )
 
 func TestBTFP_NestedTransaction(t *testing.T) {
@@ -55,6 +57,45 @@ func TestBTFP_ExecInsideTransaction(t *testing.T) {
 		})
 		require.NotNil(t, err)
 		require.ErrorIs(t, execErr, errTx)
+	}()
+
+	if !reached {
+		t.Skip("need real DB")
+	}
+}
+
+func TestTxQueryRow_PropagatesTransactionStartError(t *testing.T) {
+	beginErr := errors.New("begin failed")
+	tx := &Tx{
+		tx: func() (pgx.Tx, error) {
+			return nil, beginErr
+		},
+	}
+
+	var got int
+	err := tx.QueryRow("SELECT 1").Scan(&got)
+	require.ErrorIs(t, err, beginErr)
+	require.NotErrorIs(t, err, errTx)
+}
+
+func TestBTFP_QueryRowInsideTransactionReturnsErrTx(t *testing.T) {
+	db := &DB{}
+	db.setBTFP()
+	ctx := context.Background()
+
+	var queryErr error
+	var reached bool
+
+	func() {
+		defer func() { _ = recover() }()
+		_, err := db.BeginTransaction(ctx, func(tx *Tx) (bool, error) {
+			reached = true
+			var id int
+			queryErr = db.QueryRow(ctx, "SELECT 1").Scan(&id)
+			return false, queryErr
+		})
+		require.NotNil(t, err)
+		require.ErrorIs(t, queryErr, errTx)
 	}()
 
 	if !reached {
