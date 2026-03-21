@@ -575,7 +575,7 @@ func (db *DB) upgrade() error {
 	dir, err := db.sqlEmbedFS.ReadDir("sql")
 	if err != nil {
 		logger.Error("Cannot read fs entries: " + err.Error())
-		return err
+		return xerrors.Errorf("cannot read fs entries: %w", err)
 	}
 	sort.Slice(dir, func(i, j int) bool { return dir[i].Name() < dir[j].Name() })
 
@@ -595,13 +595,13 @@ func (db *DB) upgrade() error {
 		file, err := db.sqlEmbedFS.ReadFile("sql/" + name)
 		if err != nil {
 			logger.Error("weird embed file read err")
-			return err
+			return xerrors.Errorf("cannot read sql file %s: %w", name, err)
 		}
 
 		logger.Infow("Upgrading", "file", name, "size", len(file))
 		if err := applySqlFile(db, db.sqlEmbedFS, "sql/"+name); err != nil {
 			logger.Error("Cannot apply sql file: " + err.Error())
-			return err
+			return xerrors.Errorf("cannot apply sql file %s: %w", name, err)
 		}
 
 		// Mark Completed.
@@ -654,7 +654,7 @@ func parseSQLStatements(sqlContent string) []string {
 func applySqlFile(db *DB, fs embed.FS, path string) error {
 	file, err := fs.ReadFile(path)
 	if err != nil {
-		return err
+		return xerrors.Errorf("cannot read sql file %s: %w", path, err)
 	}
 
 	var megaSQL strings.Builder
