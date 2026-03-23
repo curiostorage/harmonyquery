@@ -86,6 +86,8 @@ type Config struct {
 	ITestID ITestID
 
 	*PoolConfig // Set all or nothing. We use every value.
+
+	UseTemplate bool
 }
 
 type PoolConfig struct {
@@ -232,26 +234,35 @@ func NewFromConfig(options Config) (*DB, error) {
 		itestMutex.Lock()
 		defer itestMutex.Unlock()
 
+		itestDB := "itest_" + itest
+
 		if err := ensureTemplateDatabase(conn, database, options); err != nil {
 			return nil, xerrors.Errorf("ensure itest template database: %w", err)
 		}
 
-		itestDB := "itest_" + itest
-		if !schemaRE.MatchString(itestDB) {
-			return nil, xerrors.Errorf("invalid itest database name: %q", itestDB)
-		}
-		if err := conn.runWithConn(database, 30*time.Second, func(p *pgx.Conn) error {
-			_, err := p.Exec(context.Background(), "CREATE DATABASE "+itestDB+" TEMPLATE "+itestTemplateDatabase)
-			return err
-		}); err != nil {
-			return nil, xerrors.Errorf("create itest database: %w", err)
-		}
+		if options.UseTemplate {
+			if !schemaRE.MatchString(itestDB) {
+				return nil, xerrors.Errorf("invalid itest database name: %q", itestDB)
+			}
+			if err := conn.runWithConn(database, 30*time.Second, func(p *pgx.Conn) error {
+				_, err := p.Exec(context.Background(), "CREATE DATABASE "+itestDB+" TEMPLATE "+itestTemplateDatabase)
+				return err
+			}); err != nil {
+				return nil, xerrors.Errorf("create itest database: %w", err)
+			}
 
-		options.Database = itestDB
-		options.Schema = "public"
-		connString = conn.connString(itestDB)
-		itestBaseDB = database
-		skipUpgrade = true
+			options.Database = itestDB
+			options.Schema = "public"
+			connString = conn.connString(itestDB)
+			itestBaseDB = database
+			skipUpgrade = true
+		} else {
+			options.Schema = "itest_" + itest
+			if err := ensureSchemaExists(conn, options.Schema, database); err != nil {
+				return nil, err
+			}
+			connString = conn.connString(database)
+		}
 	} else if err := ensureSchemaExists(conn, options.Schema, database); err != nil {
 		return nil, err
 	}
@@ -265,7 +276,14 @@ func NewFromConfig(options Config) (*DB, error) {
 		DBMeasures.Errors.M(1)
 	}
 
-	db := DB{cfg: cfg, schema: options.Schema, itestBaseDB: itestBaseDB, itestConn: conn, hostnames: hosts, sqlEmbedFS: *options.SqlEmbedFS, downgradeEmbedFS: *options.DowngradeEmbedFS} // pgx populated in AddStatsAndConnect
+	db := DB{
+		cfg:              cfg,
+		schema:           options.Schema,
+		itestBaseDB:      itestBaseDB,
+		itestConn:        conn,
+		hostnames:        hosts,
+		sqlEmbedFS:       *options.SqlEmbedFS,
+		downgradeEmbedFS: *options.DowngradeEmbedFS} // pgx populated in AddStatsAndConnect
 	if err := db.addStatsAndConnect(); err != nil {
 		return nil, err
 	}
@@ -575,7 +593,7 @@ func (db *DB) upgrade() error {
 	dir, err := db.sqlEmbedFS.ReadDir("sql")
 	if err != nil {
 		logger.Error("Cannot read fs entries: " + err.Error())
-		return err
+		return xerrors.Errorf("cannot read fs entries: %w", err)
 	}
 	sort.Slice(dir, func(i, j int) bool { return dir[i].Name() < dir[j].Name() })
 
@@ -595,13 +613,13 @@ func (db *DB) upgrade() error {
 		file, err := db.sqlEmbedFS.ReadFile("sql/" + name)
 		if err != nil {
 			logger.Error("weird embed file read err")
-			return err
+			return xerrors.Errorf("cannot read sql file %s: %w", name, err)
 		}
 
 		logger.Infow("Upgrading", "file", name, "size", len(file))
 		if err := applySqlFile(db, db.sqlEmbedFS, "sql/"+name); err != nil {
 			logger.Error("Cannot apply sql file: " + err.Error())
-			return err
+			return xerrors.Errorf("cannot apply sql file %s: %w", name, err)
 		}
 
 		// Mark Completed.
@@ -654,7 +672,7 @@ func parseSQLStatements(sqlContent string) []string {
 func applySqlFile(db *DB, fs embed.FS, path string) error {
 	file, err := fs.ReadFile(path)
 	if err != nil {
-		return err
+		return xerrors.Errorf("cannot read sql file %s: %w", path, err)
 	}
 
 	var megaSQL strings.Builder
