@@ -236,11 +236,10 @@ func NewFromConfig(options Config) (*DB, error) {
 
 		itestDB := "itest_" + itest
 
-		if err := ensureTemplateDatabase(conn, database, options); err != nil {
-			return nil, xerrors.Errorf("ensure itest template database: %w", err)
-		}
-
 		if options.UseTemplate {
+			if err := ensureTemplateDatabase(conn, database, options); err != nil {
+				return nil, xerrors.Errorf("ensure itest template database: %w", err)
+			}
 			if !schemaRE.MatchString(itestDB) {
 				return nil, xerrors.Errorf("invalid itest database name: %q", itestDB)
 			}
@@ -392,22 +391,37 @@ func (db *DB) addStatsAndConnect() error {
 // ITestDeleteAll will delete everything created for "this" integration test.
 // This must be called at the end of each integration test.
 func (db *DB) ITestDeleteAll() {
-	if db.itestBaseDB == "" {
-		logger.Warn("Warning: this should never be called on anything but an itest database.")
+	// Template mode uses a dedicated itest database per test.
+	if db.itestBaseDB != "" {
+		itestDB := db.cfg.ConnConfig.Database
+		db.pgx.Close()
+		if !schemaRE.MatchString(itestDB) {
+			logger.Warn("warning: unclean itest shutdown: invalid database name")
+			return
+		}
+		err := db.itestConn.runWithConn(db.itestBaseDB, 10*time.Second, func(p *pgx.Conn) error {
+			_, err := p.Exec(context.Background(), "DROP DATABASE "+itestDB)
+			return err
+		})
+		if err != nil {
+			logger.Warn("warning: unclean itest shutdown: cannot drop database: " + err.Error())
+		}
 		return
 	}
-	itestDB := db.cfg.ConnConfig.Database
-	db.pgx.Close()
-	if !schemaRE.MatchString(itestDB) {
-		logger.Warn("warning: unclean itest shutdown: invalid database name")
+
+	// Non-template mode keeps tests isolated by schema within the base DB.
+	if !strings.HasPrefix(db.schema, "itest_") {
+		logger.Warn("Warning: this should never be called on anything but an itest schema/database.")
 		return
 	}
-	err := db.itestConn.runWithConn(db.itestBaseDB, 10*time.Second, func(p *pgx.Conn) error {
-		_, err := p.Exec(context.Background(), "DROP DATABASE "+itestDB)
-		return err
-	})
+	defer db.pgx.Close()
+	if !schemaRE.MatchString(db.schema) {
+		logger.Warn("warning: unclean itest shutdown: invalid schema name")
+		return
+	}
+	_, err := db.pgx.Exec(context.Background(), "DROP SCHEMA "+db.schema+" CASCADE")
 	if err != nil {
-		logger.Warn("warning: unclean itest shutdown: cannot drop database: " + err.Error())
+		logger.Warn("warning: unclean itest shutdown: cannot delete schema: " + err.Error())
 	}
 }
 
