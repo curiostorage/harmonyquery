@@ -87,7 +87,8 @@ type Config struct {
 
 	*PoolConfig // Set all or nothing. We use every value.
 
-	UseTemplate bool
+	UseTemplate      bool
+	RecreateTemplate bool
 }
 
 type PoolConfig struct {
@@ -228,7 +229,6 @@ func NewFromConfig(options Config) (*DB, error) {
 	conn := buildConnParams(options, hosts, port)
 	connString := conn.connString(database)
 
-	skipUpgrade := false
 	itestBaseDB := ""
 	if itest != "" {
 		itestMutex.Lock()
@@ -254,7 +254,6 @@ func NewFromConfig(options Config) (*DB, error) {
 			options.Schema = "public"
 			connString = conn.connString(itestDB)
 			itestBaseDB = database
-			skipUpgrade = true
 		} else {
 			options.Schema = "itest_" + itest
 			if err := ensureSchemaExists(conn, options.Schema, database); err != nil {
@@ -287,10 +286,8 @@ func NewFromConfig(options Config) (*DB, error) {
 		return nil, err
 	}
 
-	if !skipUpgrade {
-		if err = db.upgrade(); err != nil {
-			return nil, err
-		}
+	if err = db.upgrade(); err != nil {
+		return nil, err
 	}
 
 	return &db, db.setBTFP()
@@ -442,7 +439,17 @@ func ensureSchemaExists(conn connParams, schema, database string) error {
 
 func ensureTemplateDatabase(conn connParams, baseDB string, options Config) error {
 	itestTemplateOnce.Do(func() {
-		itestTemplateErr = ensureTemplateDatabaseOnce(conn, baseDB, options)
+		var exists bool
+		err := conn.runWithConn(baseDB, 60*time.Second, func(p *pgx.Conn) error {
+			return p.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = "+"'"+itestTemplateDatabase+"')").Scan(&exists)
+		})
+		if err != nil {
+			itestTemplateErr = xerrors.Errorf("cannot check if template database exists: %w", err)
+			return
+		}
+		if !exists || options.RecreateTemplate {
+			itestTemplateErr = ensureTemplateDatabaseOnce(conn, baseDB, options)
+		}
 	})
 	return itestTemplateErr
 }
