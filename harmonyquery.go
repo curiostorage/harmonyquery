@@ -126,6 +126,50 @@ func (db *DB) ReadOnly() bool {
 	return db.readOnly
 }
 
+// PoolStat is a snapshot of the connection pool. The counts and durations are
+// cumulative since the pool opened; the connection numbers are current.
+type PoolStat struct {
+	// AcquireCount is the number of successful acquires.
+	AcquireCount int64
+	// AcquireDuration is the total time spent in successful acquires.
+	AcquireDuration time.Duration
+	// EmptyAcquireCount is the number of successful acquires that waited for a
+	// connection to be released or opened because none was free.
+	EmptyAcquireCount int64
+	// EmptyAcquireWaitTime is the total time those acquires spent waiting.
+	EmptyAcquireWaitTime time.Duration
+	// CanceledAcquireCount is the number of acquires abandoned because the
+	// caller's context ended first.
+	CanceledAcquireCount int64
+	// AcquiredConns is the number of connections currently in use.
+	AcquiredConns int32
+	// IdleConns is the number of open connections currently unused.
+	IdleConns int32
+	// TotalConns is the number of open connections, in use or not.
+	TotalConns int32
+	// MaxConns is the pool's configured maximum.
+	MaxConns int32
+}
+
+// Stat returns a snapshot of the connection pool. Export it as metrics to see
+// whether the PoolConfig fits the load: EmptyAcquireCount over AcquireCount is
+// the share of calls that waited for a connection, and EmptyAcquireWaitTime
+// over EmptyAcquireCount is how long they waited on average.
+func (db *DB) Stat() PoolStat {
+	s := db.pgx.Stat()
+	return PoolStat{
+		AcquireCount:         s.AcquireCount(),
+		AcquireDuration:      s.AcquireDuration(),
+		EmptyAcquireCount:    s.EmptyAcquireCount(),
+		EmptyAcquireWaitTime: s.EmptyAcquireWaitTime(),
+		CanceledAcquireCount: s.CanceledAcquireCount(),
+		AcquiredConns:        s.AcquiredConns(),
+		IdleConns:            s.IdleConns(),
+		TotalConns:           s.TotalConns(),
+		MaxConns:             s.MaxConns(),
+	}
+}
+
 func NewFromConfigWithITestID(t *testing.T, id ITestID) (*DB, error) {
 	logger.Infof("%s: %s", DefaultHostEnv, os.Getenv(DefaultHostEnv))
 	db, err := New(

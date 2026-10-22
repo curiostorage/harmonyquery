@@ -13,6 +13,7 @@ A Postgres/Yugabyte adapter in harmony with busy developers. The top few dev mis
 - Discourages dangling transactions & dangling result cursors. 
 - Conveniences:  QueryRow().Scan(&a) and: var a []resultType; db.Select(&a, "query")
 - Monitors behavior via Prometheus stats and logging of errors
+- Exposes the connection pool's statistics (db.Stat()) for your own metrics
 - Entirely within the Go1 promise. No unsafe. 
 
 ## Notes
